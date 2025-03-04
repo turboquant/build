@@ -79,4 +79,18 @@ canvas {
 
 #videoUpload {
     margin-right: 10px;
+}
+
+.model-status {
+    background: #fff3cd;
+    color: #856404;
+    padding: 10px;
+    border-radius: 5px;
+    margin: 10px 0;
+    text-align: center;
+}
+
+.model-status.ready {
+    background: #d4edda;
+    color: #155724;
 } 

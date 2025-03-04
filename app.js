@@ -9,27 +9,62 @@ class VideoObjectDetector {
         this.progressBar = document.getElementById('progress');
         this.progressFill = this.progressBar.querySelector('.progress-fill');
         
+        this.modelReady = false;
         this.worker = new Worker('detector.worker.js');
         this.initializeEventListeners();
+        this.initializeWorker();
     }
 
     initializeEventListeners() {
         this.uploadInput.addEventListener('change', (e) => this.handleVideoUpload(e));
         this.recordBtn.addEventListener('click', () => this.startRecording());
-        
+    }
+
+    initializeWorker() {
         this.worker.onmessage = (e) => {
-            const { type, detections, frameIndex } = e.data;
-            if (type === 'detection') {
-                this.handleDetections(detections, frameIndex);
+            const { type, success, error, detections, frameIndex } = e.data;
+            
+            switch (type) {
+                case 'initialized':
+                    this.modelReady = success;
+                    if (!success) {
+                        console.error('Model initialization failed:', error);
+                        alert('Failed to load object detection model');
+                    }
+                    break;
+                    
+                case 'detection':
+                    this.handleDetections(detections, frameIndex);
+                    break;
+                    
+                case 'error':
+                    console.error('Worker error:', e.data.message);
+                    break;
             }
         };
+
+        this.worker.onerror = (error) => {
+            console.error('Worker error:', error);
+            alert('An error occurred in the object detection worker');
+        };
+
+        // Initialize the model
+        this.worker.postMessage({ type: 'init' });
     }
 
     async handleVideoUpload(e) {
+        if (!this.modelReady) {
+            alert('Please wait for the model to load');
+            return;
+        }
+
         const file = e.target.files[0];
         if (file) {
             this.video.src = URL.createObjectURL(file);
-            this.video.onloadeddata = () => this.processVideo();
+            this.video.onloadeddata = () => {
+                console.log('Video loaded, duration:', this.video.duration);
+                this.processVideo();
+            };
         }
     }
 
@@ -60,44 +95,81 @@ class VideoObjectDetector {
     }
 
     async processVideo() {
-        this.canvas.width = 640;
-        this.canvas.height = 640;
-        this.progressBar.style.display = 'block';
-        this.resultsDiv.innerHTML = '';
+        try {
+            console.log('Starting video processing');
+            this.canvas.width = 640;
+            this.canvas.height = 640;
+            this.progressBar.style.display = 'block';
+            this.resultsDiv.innerHTML = '';
 
-        const frameInterval = 1; // Process 1 frame per second
-        const duration = this.video.duration;
-        const totalFrames = Math.floor(duration / frameInterval);
-        
-        for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
-            const currentTime = frameIndex * frameInterval;
-            await this.processFrame(currentTime, frameIndex, totalFrames);
+            if (!this.video.duration) {
+                throw new Error('Invalid video duration');
+            }
+
+            const frameInterval = 1; // Process 1 frame per second
+            const duration = this.video.duration;
+            const totalFrames = Math.floor(duration / frameInterval);
+            
+            console.log(`Processing ${totalFrames} frames...`);
+            
+            for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+                const currentTime = frameIndex * frameInterval;
+                await this.processFrame(currentTime, frameIndex, totalFrames);
+            }
+            
+            console.log('Video processing complete');
+        } catch (error) {
+            console.error('Error processing video:', error);
+            alert('Error processing video: ' + error.message);
+        } finally {
+            this.progressBar.style.display = 'none';
         }
-
-        this.progressBar.style.display = 'none';
     }
 
     async processFrame(time, frameIndex, totalFrames) {
-        return new Promise((resolve) => {
-            this.video.currentTime = time;
-            this.video.onseeked = () => {
-                this.drawFrame();
-                const imageData = this.ctx.getImageData(0, 0, 640, 640);
-                
-                this.worker.postMessage({
-                    type: 'detect',
-                    data: {
-                        imageData,
-                        frameIndex
-                    }
-                });
+        return new Promise((resolve, reject) => {
+            const seekHandler = async () => {
+                try {
+                    console.log(`Processing frame at time ${time}s`);
+                    this.drawFrame();
+                    const imageData = this.ctx.getImageData(0, 0, 640, 640);
+                    
+                    // Create a promise for the detection result
+                    const detectionPromise = new Promise((detectionResolve, detectionReject) => {
+                        const messageHandler = (e) => {
+                            if (e.data.frameIndex === frameIndex) {
+                                this.worker.removeEventListener('message', messageHandler);
+                                if (e.data.type === 'error') {
+                                    detectionReject(new Error(e.data.message));
+                                } else {
+                                    detectionResolve();
+                                }
+                            }
+                        };
+                        this.worker.addEventListener('message', messageHandler);
+                    });
 
-                // Update progress bar
-                const progress = ((frameIndex + 1) / totalFrames) * 100;
-                this.progressFill.style.width = `${progress}%`;
+                    // Send frame to worker
+                    this.worker.postMessage({
+                        type: 'detect',
+                        data: { imageData, frameIndex }
+                    });
 
-                resolve();
+                    // Wait for detection
+                    await detectionPromise;
+
+                    // Update progress
+                    const progress = ((frameIndex + 1) / totalFrames) * 100;
+                    this.progressFill.style.width = `${progress}%`;
+
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
             };
+
+            this.video.currentTime = time;
+            this.video.onseeked = seekHandler;
         });
     }
 

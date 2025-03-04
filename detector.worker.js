@@ -3,18 +3,37 @@ importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js');
 let session = null;
 
 async function initModel() {
-    if (!session) {
-        session = await ort.InferenceSession.create('./yolov8n.onnx');
+    try {
+        if (!session) {
+            session = await ort.InferenceSession.create('./yolov8n.onnx');
+            postMessage({ type: 'initialized', success: true });
+        }
+    } catch (error) {
+        console.error('Model initialization error:', error);
+        postMessage({ 
+            type: 'initialized', 
+            success: false, 
+            error: error.message 
+        });
     }
 }
 
 async function detectObjects(imageData) {
-    const input = preprocessImage(imageData);
-    const tensor = new ort.Tensor('float32', input, [1, 3, 640, 640]);
-    const feeds = { [session.inputNames[0]]: tensor };
-    const outputMap = await session.run(feeds);
-    const output = outputMap[session.outputNames[0]].data;
-    return postProcess(output);
+    try {
+        if (!session) {
+            throw new Error('Model not initialized');
+        }
+
+        const input = preprocessImage(imageData);
+        const tensor = new ort.Tensor('float32', input, [1, 3, 640, 640]);
+        const feeds = { [session.inputNames[0]]: tensor };
+        const outputMap = await session.run(feeds);
+        const output = outputMap[session.outputNames[0]].data;
+        return postProcess(output);
+    } catch (error) {
+        console.error('Detection error:', error);
+        throw error;
+    }
 }
 
 function preprocessImage(imageData) {
@@ -51,21 +70,32 @@ function postProcess(output) {
 }
 
 onmessage = async function(e) {
-    const { type, data } = e.data;
-    
-    switch (type) {
-        case 'init':
-            await initModel();
-            postMessage({ type: 'initialized' });
-            break;
-            
-        case 'detect':
-            const detections = await detectObjects(data.imageData);
-            postMessage({ 
-                type: 'detection',
-                detections,
-                frameIndex: data.frameIndex 
-            });
-            break;
+    try {
+        const { type, data } = e.data;
+        
+        switch (type) {
+            case 'init':
+                await initModel();
+                break;
+                
+            case 'detect':
+                if (!session) {
+                    throw new Error('Model not initialized');
+                }
+                const detections = await detectObjects(data.imageData);
+                postMessage({ 
+                    type: 'detection',
+                    success: true,
+                    detections,
+                    frameIndex: data.frameIndex 
+                });
+                break;
+        }
+    } catch (error) {
+        postMessage({
+            type: 'error',
+            message: error.message,
+            frameIndex: e.data?.data?.frameIndex
+        });
     }
 }; 
